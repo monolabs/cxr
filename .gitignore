@@ -1,3 +1,9 @@
+# keep folder structure
+data/*
+!data/.keep
+models/*
+!models/.keep
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
