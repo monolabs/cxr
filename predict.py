@@ -3,10 +3,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import h5py
 from tqdm import tqdm
-from typing import Union, List
+from typing import Union, List, Tuple
+
+from sklearn.metrics import accuracy_score
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = torch.device("cpu")
 
@@ -14,11 +16,10 @@ from clip import load
 
 
 class CXRTestDataset(Dataset):
-    """Represents an abstract HDF5 dataset.
-    
-    Input params:
+    """
+    H5 dataset.
+    Params:
         img_path: Path to hdf5 file containing images.
-        label_path: Path to file containing labels (csv) 
         transform: PyTorch transform to apply to every data instance (default=None).
     """
     def __init__(
@@ -51,38 +52,41 @@ class CXRTestDataset(Dataset):
     
 
 
-def load_clip(model_path): 
+def load_clip(model_path: str) -> torch.nn.Module: 
     """
-    load pretrained model from model_path
+    loads pretrained model from model_path
     """
     model, _ = load("ViT-B/32", device=device, jit=False) 
     model.load_state_dict(torch.load(model_path, map_location=device))
     return model
 
 
-def load_ensemble(model_paths):
+def load_ensemble(model_paths: List[str]) -> List[torch.nn.Module]:
+    """
+    loads a list of models from model_paths
+    """
     models = []
-    for mpath in tqdm(model_paths):
+    for mpath in tqdm(model_paths, desc='loading models'):
         model = load_clip(mpath)
         models.append(model)
     return models
 
 
-def tokenize(texts: Union[str, List[str]], tokenizer, context_length: int = 77) -> torch.LongTensor:
+def tokenize(
+        texts: Union[str, List[str]], 
+        tokenizer, 
+        context_length: int = 77
+        ) -> torch.Tensor:
     """
     Returns the tokenized representation of given input string(s)
 
-    Parameters
-    ----------
-    texts : Union[str, List[str]]
-        An input string or a list of input strings to tokenize
+    Args:
+        texts: Union[str, List[str]]: An input string or a list of input strings to tokenize
+        tokenizer: an object with method 'encode'
+        context_length: int: The context length to use; all CLIP models use 77 as the context length
 
-    context_length : int
-        The context length to use; all CLIP models use 77 as the context length
-
-    Returns
-    -------
-    A two-dimensional tensor containing the resulting tokens, shape = [number of input strings, context_length]
+    Returns:
+        A two-dimensional tensor containing the resulting tokens, shape = [number of input strings, context_length]
     """
     if isinstance(texts, str):
         texts = [texts]
@@ -101,7 +105,13 @@ def tokenize(texts: Union[str, List[str]], tokenizer, context_length: int = 77) 
 
 
 
-def generate_average_template_embeddings(classnames, templates, model, tokenizer, context_length=77):
+def generate_average_template_embeddings(
+        classnames: List[str], 
+        templates: List[str], 
+        model: torch.nn.Module, 
+        tokenizer, 
+        context_length: int=77
+        ) -> torch.Tensor:
     """
     generate class embeddings for the combination of classnames and templates. 
     Templates will be appended by classnames using 'format' function.
@@ -109,12 +119,22 @@ def generate_average_template_embeddings(classnames, templates, model, tokenizer
     E.g.
         classnames = ['atelectasis', 'lung opacity']
         templates = ['no {}']
+    
+    Args:
+        classnames: A list of classes (pathologies) to query
+        templates: A list of string template to be combined with classnames
+        model: A CLIP model
+        tokenizer: a text tokenizer with method 'encode'
+        context_length: int: The context length to use; all CLIP models use 77 as the context length
+
+    Returns:
+        A tensor of embeddings (averaged over templates)
     """
     model = model.to(device)
     with torch.no_grad():
         average_embeddings = []
         # compute embedding through model for each class
-        for classname in tqdm(classnames):
+        for classname in tqdm(classnames, desc='embedding templates for each class'):
             texts = [template.format(classname) for template in templates] # format with class
             texts = tokenize(texts, tokenizer, context_length=context_length) # tokenize
             texts = texts.to(device)
@@ -131,26 +151,29 @@ def generate_average_template_embeddings(classnames, templates, model, tokenizer
 
 
 
-def predict(loader, model, average_template_embeddings, verbose=0): 
+def predict(
+        loader: DataLoader, 
+        model: torch.nn.Module, 
+        average_template_embeddings: torch.Tensor, 
+        verbose: bool=False
+        ) -> np.ndarray: 
     """
-    FUNCTION: predict
-    ---------------------------------
     This function runs the cxr images through the model 
     and computes the cosine similarities between the images
     and the text embeddings. 
     
-    args: 
-        * loader -  PyTorch data loader, loads in cxr images
-        * model - PyTorch model, trained clip model 
-        * average_text_embeddings - PyTorch Tensor, outputs of text encoder for labels
-        * softmax_eval (optional) - Use +/- softmax method for evaluation 
-        * verbose (optional) - bool, If True, will print out intermediate tensor values for debugging.
+    Args: 
+        loader: PyTorch data loader, loads in cxr images
+        model: PyTorch model, trained CLIP model 
+        average_template_embeddings: PyTorch Tensor, outputs of text encoder for labels
+        verbose (optional): bool, If True, will print out intermediate tensor values for debugging.
         
-    Returns numpy array, predictions on all test data samples. 
+    Returns 
+        numpy array, predictions on all test data samples. 
     """
     y_pred = []
     with torch.no_grad():
-        for _, data in enumerate(tqdm(loader)):
+        for _, data in enumerate(tqdm(loader, desc='predicting')):
             images = data['img'].to(device)
 
             # predict
@@ -163,6 +186,7 @@ def predict(loader, model, average_template_embeddings, verbose=0):
             
             y_pred.append(logits)
             
+            # legacy verbose...
             if verbose: 
                 plt.imshow(images[0][0])
                 plt.show()
@@ -178,22 +202,29 @@ def predict(loader, model, average_template_embeddings, verbose=0):
 
 
 
-def run_single_prediction(classnames, template, model, tokenizer, loader, context_length=77): 
+def run_single_prediction(
+        classnames: List[str], 
+        template: str, 
+        model: torch.nn.Module, 
+        tokenizer, 
+        loader: DataLoader, 
+        context_length: int=77
+        ) -> np.ndarray: 
     """
-    FUNCTION: run_single_prediction
-    --------------------------------------
+    run_single_predictions (via 'predict' function)
     This function will make probability predictions for a single template
     (i.e. "has {}"). 
     
-    args: 
-        * cxr_labels - list, labels for a specific zero-shot task. (i.e. ['Atelectasis',...])
-        * template - string, template to input into model. 
-        * model - PyTorch model, trained clip model
-        * loader - PyTorch data loader, loads in cxr images
-        * softmax_eval (optional) - Use +/- softmax method for evaluation 
-        * context_length (optional) - int, max number of tokens of text inputted into the model.
+    Args: 
+        classanmes: list, labels for a specific zero-shot task. (i.e. ['Atelectasis',...])
+        template: string, template to input into model. 
+        model: PyTorch model, trained clip model
+        tokenizer: a text tokenizer with method 'encode'
+        loader: PyTorch data loader, loads in cxr images
+        context_length (optional): int, max number of tokens of text inputted into the model.
         
-    Returns list, predictions from the given template. 
+    Returns
+        predictions (logit/cosine similarity) from the given template. Shape: (num images, num class)
     """
     average_template_embeddings = generate_average_template_embeddings(classnames, [template], model, tokenizer, context_length=context_length)
     y_pred = predict(loader, model, average_template_embeddings)
@@ -201,9 +232,27 @@ def run_single_prediction(classnames, template, model, tokenizer, loader, contex
 
 
 
-def run_softmax_eval(model, loader, classnames: list, pair_template: tuple, tokenizer, context_length: int = 77): 
+def run_softmax_eval(
+        model: torch.nn.Module, 
+        loader: DataLoader, 
+        classnames: List[str], 
+        pair_template: List[str], 
+        tokenizer, 
+        context_length: int = 77
+        ) -> np.ndarray: 
     """
     Run softmax evaluation to obtain a single prediction from the model.
+
+    Args: 
+        classnames: list, labels for a specific zero-shot task. (i.e. ['Atelectasis',...])
+        tokenizer: a text tokenizer with method 'encode'
+        pair_template: string, template to input into model. A pair of positive prompt and negative prompt. 
+        model: PyTorch model, trained clip model
+        loader: PyTorch data loader, loads in cxr images
+        context_length (optional): int, max number of tokens of text inputted into the model.
+        
+    Returns
+        predictions (logit/cosine similarity) from the given template. Shape: (num images, num class)
     """
      # get pos and neg phrases
     pos = pair_template[0]
@@ -220,8 +269,28 @@ def run_softmax_eval(model, loader, classnames: list, pair_template: tuple, toke
 
 
 
-def get_ensemble_predictions(models, loader, classnames, pair_template, tokenizer, context_length=77):
+def get_ensemble_predictions(
+        models: torch.nn.Module, 
+        loader: DataLoader, 
+        classnames: List[str], 
+        pair_template: List[str], 
+        tokenizer, 
+        context_length: int=77
+        ) -> Tuple[np.ndarray]:
     """
+    get average prediction (logit) from multiple models.
+
+    Args: 
+        classnames: list, labels for a specific zero-shot task. (i.e. ['Atelectasis',...])
+        tokenizer: a text tokenizer with method 'encode'
+        pair_template: string, template to input into model. A pair of positive prompt and negative prompt. 
+        model: PyTorch model, trained clip model
+        loader: PyTorch data loader, loads in cxr images
+        context_length (optional): int, max number of tokens of text inputted into the model.
+
+    Returns:
+        A tuple of the models' individual predictions (shape: (num models, num images, num classes)) and
+        average predictions over all models (shape: (num images, num classes))
     """
     predictions = []
     for i, model in enumerate(models):
@@ -237,20 +306,18 @@ def make_true_labels(
     cxr_true_labels_path: str, 
     cxr_labels: List[str],
     cutlabels: bool = True
-): 
+) -> np.ndarray: 
     """
-    Loads in data containing the true binary labels
-    for each pathology in `cxr_labels` for all samples. This
-    is used for evaluation of model performance.
+    Create an array of labels from groundtruth csv dataset
 
-    args: 
-        * cxr_true_labels_path - str, path to csv containing ground truth labels
-        * cxr_labels - List[str], subset of label columns to select from ground truth df 
-        * cutlabels - bool, if True, will keep columns of ground truth labels that correspond
+    Args:
+        cxr_true_labels_path: path to csv dataset
+        cxr_labels: labelnames corresponding to dataset column names to use
+        cutlabels - bool, if True, will keep columns of ground truth labels that correspond
             with the labels inputted through `cxr_labels`. Otherwise, drop the first column and keep remaining.
 
-    Returns a numpy array of shape (# samples, # labels/pathologies)
-        representing the binary ground truth labels for each pathology on each sample.
+    Returns:
+        numpy array (shape: (n samples, n labels))
     """
     # create ground truth labels
     full_labels = pd.read_csv(cxr_true_labels_path)
@@ -261,3 +328,49 @@ def make_true_labels(
 
     y_true = full_labels.to_numpy()
     return y_true
+
+
+
+def get_best_accuracy_threshold(true: np.ndarray, pred_score: np.ndarray) -> Tuple[float]:
+    """
+    iteratively look for best threshold maximizing accuracy
+
+    Args:
+        true: binary groundtruth (1D)
+        pred_score: predicted probability score (1D)
+
+    Returns:
+        a tuple of best thresholds and best accuracy
+    """
+    best_accuracy = -np.inf
+    best_thresh = None
+    for thresh in pred_score:
+        p_binary = (pred_score >= thresh).astype(int)
+        acc = accuracy_score(true, p_binary)
+        if acc > best_accuracy:
+            best_accuracy = acc
+            best_thresh = thresh
+    return best_thresh, best_accuracy
+
+
+
+def optimize_accuracy(true: np.ndarray, pred_score: np.ndarray) -> Tuple[List[float]]:
+    """
+    Args:
+        true: binary groundtruth (2D, shape: (num samples, num classes))
+        pred_score: predicted probability score (2D, shape: (num samples, num classes))
+
+    Returns:
+        an tuple of best thresholds and best accuracies
+    """
+    assert true.shape == pred_score.shape, "true labels must be of the same shape as prediction score"
+
+    best_thresholds = []
+    best_accuracies = []
+    for i in range(true.shape[-1]):
+        best_thresh, best_acc = get_best_accuracy_threshold(true[:, i], pred_score[:, i])
+        best_thresholds.append(best_thresh)
+        best_accuracies.append(best_acc)
+    return best_thresholds, best_accuracies
+    
+
