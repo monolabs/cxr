@@ -331,32 +331,42 @@ def make_true_labels(
 
 
 
-def get_best_accuracy_threshold(true: np.ndarray, pred_score: np.ndarray) -> Tuple[float]:
+def get_best_metric_threshold(
+        metric_fn: Callable,
+        true: np.ndarray, 
+        pred_score: np.ndarray
+        ) -> Tuple[float]:
     """
     iteratively look for best threshold maximizing accuracy
 
     Args:
+        metric_fn: a callable that takes true value and prediction (in order) and compute metric
         true: binary groundtruth (1D)
         pred_score: predicted probability score (1D)
 
     Returns:
         a tuple of best thresholds and best accuracy
     """
-    best_accuracy = -np.inf
+    best_metric = -np.inf
     best_thresh = None
     for thresh in pred_score:
         p_binary = (pred_score >= thresh).astype(int)
-        acc = accuracy_score(true, p_binary)
-        if acc > best_accuracy:
-            best_accuracy = acc
+        metric = metric_fn(true, p_binary)
+        if metric > best_metric:
+            best_metric = metric
             best_thresh = thresh
-    return best_thresh, best_accuracy
+    return best_thresh, best_metric
 
 
 
-def optimize_accuracy(true: np.ndarray, pred_score: np.ndarray) -> Tuple[List[float]]:
+def optimize_metric(
+        metric_fn: Callable, 
+        true: np.ndarray, 
+        pred_score: np.ndarray
+        ) -> Tuple[List[float]]:
     """
     Args:
+        metric_fn: a callable that takes true value and prediction (in order) and compute metric
         true: binary groundtruth (2D, shape: (num samples, num classes))
         pred_score: predicted probability score (2D, shape: (num samples, num classes))
 
@@ -366,12 +376,12 @@ def optimize_accuracy(true: np.ndarray, pred_score: np.ndarray) -> Tuple[List[fl
     assert true.shape == pred_score.shape, "true labels must be of the same shape as prediction score"
 
     best_thresholds = []
-    best_accuracies = []
+    best_metrics = []
     for i in range(true.shape[-1]):
-        best_thresh, best_acc = get_best_accuracy_threshold(true[:, i], pred_score[:, i])
+        best_thresh, best_metric = get_best_metric_threshold(metric_fn, true[:, i], pred_score[:, i])
         best_thresholds.append(best_thresh)
-        best_accuracies.append(best_acc)
-    return best_thresholds, best_accuracies
+        best_metrics.append(best_metric)
+    return best_thresholds, best_metrics
 
 
 
@@ -382,6 +392,7 @@ def compute_column_metric(
         ) -> List[float]:
     """
     Args:
+        metric_fn: a callable that takes true value and prediction (in order) and compute metric
         true: binary groundtruth (2D, shape: (num samples, num classes))
         pred_score: predicted probability score (2D, shape: (num samples, num classes))
 
