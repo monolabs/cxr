@@ -3,7 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import h5py
 from tqdm import tqdm
-from typing import Union, List, Tuple
+from typing import Union, List, Tuple, Callable
 
 from sklearn.metrics import accuracy_score
 
@@ -372,5 +372,26 @@ def optimize_accuracy(true: np.ndarray, pred_score: np.ndarray) -> Tuple[List[fl
         best_thresholds.append(best_thresh)
         best_accuracies.append(best_acc)
     return best_thresholds, best_accuracies
+
+
+
+def compute_column_metric(
+        metric_fn: Callable, 
+        true: np.ndarray, 
+        pred: np.ndarray
+        ) -> List[float]:
+    """
+    Args:
+        true: binary groundtruth (2D, shape: (num samples, num classes))
+        pred_score: predicted probability score (2D, shape: (num samples, num classes))
+
+    Returns:
+        numpy arra (shape: (num classes,))
+    """
+    assert true.shape == pred.shape, "true labels must be of the same shape as prediction"
+    metrics = []
+    for i in range(true.shape[-1]):
+        metrics.append(metric_fn(true[:, i], pred[:, i]))
+    return metrics
     
 
